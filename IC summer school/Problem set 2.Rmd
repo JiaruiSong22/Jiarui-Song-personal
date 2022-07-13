@@ -1,0 +1,260 @@
+---
+title: "Problem Set 2"
+author: "Jiarui Song"
+date: '2022-07-13'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Case study: Simulation study of an ARMA(1,1) process with polynomial trend
+```{r}
+library(ggplot2)
+library(forecast)
+#Read the manual of the arima.sim function in the stats package
+?arima.sim
+
+#Set the length of the time series
+n <- 500
+
+#Simulate an ARMA(1,1) process with standard normal white noise and phi=0.5, theta=0.3
+#Fix the seed for the random number generation
+set.seed(1)
+x <- arima.sim(model = list(ar = 0.5, ma = 0.3), n = n, sd=5)  # ARMA(1,1) process with N(0,5^2) strict white noise
+plot(x, type="l")
+acf(x)
+
+#Alternatively you can use autoplot() from the ggplot2 package
+autoplot(x)
+
+#Fit AR(1), MA(1), ARMA(1,1) models
+
+fit_ar1 <- Arima(x, order=c(1,0,0))
+fit_ma1 <- Arima(x, order=c(0,0,1))
+fit_arma11 <- Arima(x, order=c(1,0,1))
+
+#Print the parameter estimates (and compare them to the true values!)
+fit_ar1 
+fit_ma1 
+fit_arma11 
+
+#You can use the checkresiduals() function from the forecast package
+#It plots the residuals,  their sample acf and their empirical distribution with
+# a fitted normal distribution added as a red line
+#Note that the results of the Ljung-Box test are also reported where Q* 
+#denotes the Ljung-Box test statistics which we denoted by Q_{LB} in the lecture notes
+#If the test statistics is large and hence the p-value is small (e.g. below 0.05 or 0.01 say)
+#we would reject the null hypothesis of strict white noise
+checkresiduals(fit_ar1)
+checkresiduals(fit_ma1)
+checkresiduals(fit_arma11)
+
+#You can also use the auto.arima function to automatically select the order and fit an ARIMA process
+fit <- auto.arima(x,ic = "aicc")
+fit
+ffit<-auto.arima(x,ic="aic")
+ffit
+checkresiduals(fit)
+
+################################################################
+#Next we add a trend function to the data
+
+#Define the trend function m(t)=a+bt+ct^2
+m <-function(t,a,b,c){
+  a+b*t+c*t^2
+}
+#Set a=5, b=0.03, c=0.005
+trend <- m((1:n),5,0.03,0.005)
+plot(trend,type="l")
+
+y <- trend + x
+plot(y, type="l")
+
+
+###Use differencing to get rid off trend
+model1 <-auto.arima(y,ic="aicc")
+model1
+checkresiduals(model1)
+
+###Fit a parametric model
+timepoints <- (1:n)
+#Use non-linear least squares to fit the trend function
+fit_trend <- nls(y ~ m(timepoints,a,b,c), start = list(a=0,b=0,c=0))
+summary(fit_trend)
+
+ahat <- coef(fit_trend)[1]
+bhat <- coef(fit_trend)[2]
+chat <- coef(fit_trend)[3]
+
+plot(y,type="l")
+lines(timepoints, predict(fit_trend, newdata=timepoints), col=2)
+
+#Remove trend
+detrended_data <-y-predict(fit_trend, newdata=timepoints)
+model2 <- auto.arima(detrended_data,ic="aicc")
+model2
+
+################Bonus material: Forecasting
+#Split the sample into a training and a test sample
+#Here we take 80% of the data for the training sample
+length_training <- floor(80/100*n) # we round it down in case we don't have an integer-valued number
+length_test <- n-length_training
+#Use the window function to split the dataset:
+y.train <- window(y,start=1, end=length_training)
+y.test <- window(y, start=length_training+1, end=n)
+
+
+###Use differencing to get rid off trend
+model1 <-auto.arima(y.train,ic="aicc")
+model1
+checkresiduals(model1)
+
+###Fit a parametric model
+timepoints <- (1:length_training)
+fit_trend <- nls(y.train ~ m(timepoints,a,b,c), start = list(a=0,b=0,c=0))
+summary(fit_trend)
+#The second parameter is not significant, so we refit the model excluding b
+fit_trend <- nls(y.train ~ m(timepoints,a,0,c), start = list(a=0,c=0))
+summary(fit_trend)
+
+ahat <- coef(fit_trend)[1]
+chat <- coef(fit_trend)[2]
+
+plot(y.train,type="l")
+lines(timepoints, predict(fit_trend, newdata=timepoints), col=2)
+
+#Remove trend
+detrended_data <-y.train-predict(fit_trend, newdata=timepoints)
+model2 <- auto.arima(detrended_data,ic="aicc")
+model2
+checkresiduals(model2)
+
+
+model1.pred <- predict(model1, n.ahead = length_test)$pred
+model2.pred <- predict(model2, n.ahead = length_test)$pred +m(((length_training+1):(length_training+length_test)),ahat,0,chat)
+
+
+plot(model1.pred,col = "blue", lty = 2)
+lines(model2.pred, col = "green", lty = 2)
+
+
+plot.ts(y.test)
+lines(model1.pred, col = "blue", lty = 2)
+lines(model2.pred, col = "green", lty = 2)
+
+
+forecast(model1,h=10)$mean
+plot(forecast(model1,h=length_test,fan=TRUE))#$mean
+lines(y, col="black",lwd=2)
+
+
+y_fulltrend <-c(predict(fit_trend, newdata=(1:n)),m(((length_training+1):(length_training+length_test)),ahat,0,chat))
+y_detrended <- y - y_fulltrend
+plot(forecast(model2,h=length_test,fan=TRUE))
+lines(y_detrended, col="black",lwd=2)
+
+
+accuracy(model1)
+accuracy(model2)
+```
+
+
+### Case study: Stylised facts of financial time series
+```{r}
+ 
+#Read in the data
+GOOG <- read.csv("GOOG.csv", header = TRUE, sep = ",", dec = ".")
+#Use the daily closing prices and compute the log returns
+GOOG_prices <-GOOG$Close #daily closing prices
+GOOG_logreturns <-diff(log(GOOG_prices))
+
+#Plot the prices and log returns
+par(mfrow=c(1,2))
+plot(GOOG_prices, type="l")
+plot(GOOG_logreturns, type ="l")
+
+#Compute summary statistics
+library(fBasics)
+basicStats(GOOG_prices)
+basicStats(GOOG_logreturns)
+
+#Absence of autocorrelation
+library(stats)
+library(forecast)
+par(mfrow=c(1,1))
+acf(GOOG_logreturns,lag=100)
+Box.test(GOOG_logreturns,lag=10,type="Ljung-Box")
+auto.arima(GOOG_logreturns)
+
+#Is your data normally distributed?
+library(car)
+qqPlot(GOOG_logreturns, main="Quantile-quantile plot")
+
+#Fit ghyp distributions to the logreturns
+library(ghyp)
+stepAIC.ghyp(GOOG_logreturns,silent=TRUE)
+
+#Fit a VG distribution:
+GOOG.VGfit <- fit.VGuv(GOOG_logreturns, silent = TRUE)
+#Fit an NIG distribution:
+GOOG.NIGfit <- fit.NIGuv(GOOG_logreturns, silent = TRUE)
+#Fit a Student t distribution:
+GOOG.tfit <- fit.tuv(GOOG_logreturns, silent = TRUE)
+#Fit a Gaussian distribution:
+GOOG.gaussfit <- fit.gaussuv(GOOG_logreturns)
+
+hist(GOOG.VGfit)
+hist(GOOG.NIGfit)
+hist(GOOG.tfit)
+
+#Look at qq-plots next using the function qqghyp
+#Let us start with the variance gamma fit:
+qqghyp(GOOG.VGfit, ghyp.col = "red", line = TRUE) #Compare Gaussian (black) and VG (red)
+qqghyp(GOOG.VGfit,  gaussian=FALSE, ghyp.col = "red", line = TRUE) #Only VG
+
+#Compare Gaussian, VG and student-t
+qqghyp(GOOG.VGfit, ghyp.col = "red", line = TRUE)
+qqghyp(GOOG.NIGfit,add = TRUE, ghyp.col = "green", line = TRUE)
+qqghyp(GOOG.tfit,add = TRUE, ghyp.col = "blue", line = TRUE)
+
+#Compare VG and NIG
+qqghyp(GOOG.VGfit,  gaussian=FALSE, ghyp.col = "red", line = TRUE) 
+qqghyp(GOOG.NIGfit, gaussian=FALSE, add = TRUE, ghyp.col = "green", line = TRUE)
+
+
+#Aggregational Gaussianity
+#Convert the data into a time series with 226 days per year (since weekends are excluded)
+returnts <-ts(GOOG_logreturns, frequency =226)
+#Use the aggregate function to compute various aggregates
+twodaily <- aggregate(returnts, nfrequency =226/2, sum)
+weekly <- aggregate(returnts, nfrequency =226/5, sum)
+monthly <- aggregate(returnts, nfrequency =226/19, sum)
+
+#Display the time series plots for four different choices of the time scale 
+par(mfrow=c(2,2))
+plot(returnts, type="l")
+plot(twodaily, type="l")
+plot(weekly, type="l")
+plot(monthly, type="l")
+
+#Display the true histograms for four different choices of the time scale 
+library(MASS)
+truehist(returnts)
+truehist(twodaily)
+truehist(weekly)
+truehist(monthly)
+
+#Display the quantile-quantile plots for four different choices of the time scale 
+qqPlot(returnts, main="Quantile-quantile plot")
+qqPlot(twodaily, main="Quantile-quantile plot")
+qqPlot(weekly, main="Quantile-quantile plot")
+qqPlot(monthly, main="Quantile-quantile plot")
+
+##Slow decay of the autocorrelation in absolute log returns
+par(mfrow=c(1,1))
+acf(abs(GOOG_logreturns))
+Box.test(abs(GOOG_logreturns),lag=10,type="Ljung-Box")
+
+```
